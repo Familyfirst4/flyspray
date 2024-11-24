@@ -186,14 +186,35 @@ function tpl_form($action, $name=null, $method=null, $enctype=null, $attr='')
  */
 function tpl_tasklink($task, $text = null, $strict = false, $attrs = array(), $title = array('status','summary','percent_complete'))
 {
-    global $user;
+	global $user;
 
-    $params = array();
+	$params = array();
 
-    if (!is_array($task) || !isset($task['status_name'])) {
-        $td_id = (is_array($task) && isset($task['task_id'])) ? $task['task_id'] : $task;
-        $task = Flyspray::getTaskDetails($td_id, true);
-    }
+	if (is_string($task) || is_numeric($task)) {
+		$taskid=$task;
+		$task = Flyspray::getTaskDetails($task, true);
+		// task not exist 
+		if ($task === false) {
+			if (is_null($text)) {
+				$text = 'FS#'.$taskid;
+			}
+			return htmlspecialchars($text, ENT_QUOTES, 'utf-8');
+		}
+	} else if (is_array($task)) {
+		if (isset($task['task_id']) && !isset($task['status_name'])) {
+			$taskid=$task['task_id'];
+			$task = Flyspray::getTaskDetails($task['task_id'], true);
+			// task not exist 
+			if ($task === false) {
+				if (is_null($text)) {
+					$text = 'FS#'.$task['task_id'];
+				}
+				return htmlspecialchars($text, ENT_QUOTES, 'utf-8');
+			}
+		}
+	} else {
+		return '';
+	}
 
     if ($strict === true && (!is_object($user) || !$user->can_view_task($task))) {
         return '';
@@ -1069,7 +1090,7 @@ class TextFormatter
 			return call_user_func(array($conf['general']['syntax_plugin'] . '_TextFormatter', 'render'),
 				$text, $type, $id, $instructions);
 		} else {
-			$text=strip_tags($text, '<br><br/><p><h2><h3><h4><h5><h5><h6><blockquote><a><img><u><b><strong><s><ins><del><ul><ol><li><table><caption><tr><col><colgroup><td><th><thead><tfoot><tbody><pre><code><hr>');
+			$text=strip_tags($text, '<br><br/><p><h2><h3><h4><h5><h5><h6><blockquote><a><img><u><b><strong><em><s><ins><del><ul><ol><li><table><caption><tr><col><colgroup><td><th><thead><tfoot><tbody><pre><code><hr>');
 			if (   $conf['general']['syntax_plugin']
 				&& $conf['general']['syntax_plugin'] != 'none'
 				&& $conf['general']['syntax_plugin'] != 'html') {

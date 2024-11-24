@@ -105,14 +105,14 @@ switch ($area = Req::val('area', 'prefs')) {
 			} elseif (isset($_GET['status']) && $_GET['status']==='0') {
 				$listopts['status']=0;
 			}
-			
+
 			if (isset($_GET['namesearch']) && is_string($_GET['namesearch']) && $_GET['namesearch'] != '') {
 				$listopts['namesearch'] = '%'.$_GET['namesearch'].'%';
 				$namesearch=$_GET['namesearch'];
-			} else { 
+			} else {
 				$namesearch=false;
 			}
-			
+
 			if (isset($_GET['mailsearch']) && is_string($_GET['mailsearch']) && $_GET['mailsearch'] != '') {
 				$listopts['mailsearch'] = '%'.$_GET['mailsearch'].'%';
 				$mailsearch=$_GET['mailsearch'];
@@ -136,7 +136,7 @@ switch ($area = Req::val('area', 'prefs')) {
 			$page->assign('usercount', $users['count']);
 			$page->uses('showstats', 'showltf', 'perpage', 'pagenum', 'offset', 'namesearch', 'mailsearch');
 		}
-		
+
 	case 'cat':
 	case 'groups':
 	case 'newuser':
@@ -208,11 +208,74 @@ switch ($area = Req::val('area', 'prefs')) {
 		$regcount=$db->fetchOne($statregistrations);
 		$page->assign('regcount', $regcount);
 
+		# stats of unsent xmpp notification_messages
+		# counts also possible orphaned entries (deleted entries in {notification_messages}) because adodb xmlschema does not have foreign key constraints feature.
+		$xmppmessagecount=$db->query("SELECT COUNT(*) AS count FROM {notification_recipients}
+			WHERE notify_method='j'");
+
+		$page->assign('xmppmessagecount', $db->fetchRow($xmppmessagecount)['count']);
+
+		# 10 of the unsent xmpp messages with count of recipients
+		$xmppmessages=$db->query("
+			SELECT m.message_id, COUNT(r.recipient_id) AS rcount, time_created, message_subject
+			FROM {notification_messages} m
+			LEFT JOIN {notification_recipients} r ON m.message_id=r.message_id
+			WHERE notify_method='j'
+			GROUP BY m.message_id
+			LIMIT 10"
+		);
+		$page->assign('xmppmessages', $db->fetchAllArray($xmppmessages));
+
+		# use join instead of left join here
+		if ($db->dbtype=='pgsql') {
+			$oldyear=$db->query("SELECT count(*)
+				FROM {notification_messages} m
+				JOIN {notification_recipients} r ON r.message_id=m.message_id
+				WHERE r.notify_method='j'
+				AND to_timestamp(time_created) < (CURRENT_TIMESTAMP - INTERVAL '1 year')");
+		} else {
+			# mysql/mariadb
+			$oldyear=$db->query("SELECT count(*)
+				FROM {notification_messages} m
+				JOIN {notification_recipients} r ON r.message_id=m.message_id
+				WHERE r.notify_method='j'
+				AND from_unixtime(time_created) < (CURRENT_TIMESTAMP - INTERVAL 1 year)");
+		}
+		$page->assign('olderyear', $db->fetchRow($oldyear)[0]);
+
+		if ($db->dbtype=='pgsql') {
+			$oldmonth=$db->query("SELECT count(*)
+				FROM {notification_messages} m
+				JOIN {notification_recipients} r ON r.message_id=m.message_id
+				WHERE r.notify_method='j'
+				AND to_timestamp(time_created) < (CURRENT_TIMESTAMP - INTERVAL '1 month')");
+		} else {
+			# mysql/mariadb
+			$oldmonth=$db->query("SELECT count(*)
+				FROM {notification_messages} m
+				JOIN {notification_recipients} r ON r.message_id=m.message_id
+				WHERE r.notify_method='j'
+				AND from_unixtime(time_created) < (CURRENT_TIMESTAMP - INTERVAL 1 month)");
+		}
+		$page->assign('oldermonth', $db->fetchRow($oldmonth)[0]);
+
+
 		# show oldest unfinished user registrations
 		$registrations=$db->query('SELECT reg_time, user_name, email_address FROM {registrations}
 			ORDER BY reg_time ASC
 			LIMIT 50');
 		$page->assign('registrations', $db->fetchAllArray($registrations));
+
+		/**
+                * $db and $page are passed by reference for these category checks.
+                * $page will be modified, $db only be used for SELECT queries.
+                */
+		require_once(BASEDIR .'/includes/CategoriesNestedSetChecks.php');
+		Flyspray\CategoriesNestedSetDBChecks::checkOverlapped($db, $page);
+		Flyspray\CategoriesNestedSetDBChecks::checkFlipped($db, $page);
+		Flyspray\CategoriesNestedSetDBChecks::checkLftRgtUnique($db, $page);
+		Flyspray\CategoriesNestedSetDBChecks::checkTasks($db, $page);
+		Flyspray\CategoriesNestedSetDBChecks::drawGraphs($db, $page);
 
 		$sinfo=$db->dblink->serverInfo();
 		if( ($db->dbtype=='mysqli' || $db->dbtype=='mysql') && isset($sinfo['version'])) {
@@ -276,7 +339,7 @@ switch ($area = Req::val('area', 'prefs')) {
 		} elseif ($db->dbtype=='pgsql') {
 			$fsdb=$db->query("SELECT datcollate AS default_collation_name, datctype AS default_character_set_name FROM pg_database WHERE datname=?", array($db->dblink->database));
                         $page->assign('fsdb', $db->fetchRow($fsdb));
-			
+
 			$fstables=$db->query("SELECT table_name, '' AS table_collation, table_type, '' AS create_options, '-' AS table_comment
 				FROM INFORMATION_SCHEMA.tables
 				WHERE table_catalog=? AND table_name LIKE '".$db->dbprefix."%'
@@ -294,7 +357,7 @@ switch ($area = Req::val('area', 'prefs')) {
 		}
 		$page->assign('adodbversion', $db->dblink->version());
 		$page->assign('htmlpurifierversion', HTMLPurifier::VERSION);
-		
+
 		# swiftmailer 5.4.* version not set for class when installed with composer, so test for a VERSION file in swiftmailer directory first:
 		if (file_exists('./vendor/swiftmailer/swiftmailer/VERSION')) {
 			$page->assign('swiftmailerversion', file_get_contents('./vendor/swiftmailer/swiftmailer/VERSION'));
@@ -302,7 +365,7 @@ switch ($area = Req::val('area', 'prefs')) {
 			# maybe	later versions get it right
 			$page->assign('swiftmailerversion', Swift::VERSION);
 		}
-		
+
 		$page->pushTpl('admin.'.$area.'.tpl');
 		break;
 	default:

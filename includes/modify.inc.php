@@ -109,9 +109,22 @@ switch ($action = Req::val('action'))
             if ($user->isAnon()) {
                 Flyspray::redirect(createURL('details', $task_id, null, array('task_token' => $token)));
             } else {
-                Flyspray::redirect(createURL('details', $task_id));
+                if (Post::val('addanother') != 1) {
+                    if (array_key_exists('addanothertask', $_SESSION)) {
+                        unset($_SESSION['addanothertask']);
+                    }
+
+                    Flyspray::redirect(createURL('details', $task_id));
+                } else {
+                    $_SESSION['addanothertask'] = 1;
+                    Flyspray::redirect(createURL('newtask', Post::val('project_id')));
+                }
             }
         } else {
+            if (array_key_exists('addanothertask', $_SESSION)) {
+                unset($_SESSION['addanothertask']);
+            }
+
             Flyspray::show_error(L('databasemodfailed'));
             break;
         }
@@ -1673,8 +1686,18 @@ switch ($action = Req::val('action'))
 			)
 		);
 		$args = array_merge($args, array_map(array('Post', 'num'), $ints));
+
 		$cols[] = 'notify_types';
-		$args[] = implode(' ', (array) Post::val('notify_types'));
+		$notify_types = array();
+		if (isset($_POST['notify_types']) && is_array($_POST['notify_types'])) {
+			foreach ($_POST['notify_types'] as $notify_type_id) {
+				if (is_numeric($notify_type_id)) {
+					$notify_types[] = $notify_type_id;
+				}
+			}
+		}
+		$args[] = implode(' ', $notify_types);
+	
 		$cols[] = 'last_updated';
 		$args[] = time();
 		$cols[] = 'disp_intro';
@@ -1762,6 +1785,14 @@ switch ($action = Req::val('action'))
                     break;
                 }
 
+                /**
+                 * 'project': User prefers using 'project language setting' instead of 'user language setting'. Project language itself has fallback to 'global language setting'.
+                 */
+                if (!preg_match('/^(project|[a-z]{2,3}(_[a-z]{2,3})?)$/', Post::val('lang_code', 'en'))) {
+                        Flyspray::show_error(L('invalidlanguagecode'));
+                        break;
+                }
+
                 # current CleanFS template skips oldpass input requirement for admin accounts: if someone is able to catch an admin session he could simply create another admin acc for example.
                 #if ( (!$user->perms('is_admin') || $user->id == Post::val('user_id')) && !Post::val('oldpass')
                 if ( !$user->perms('is_admin') && !Post::val('oldpass') && (Post::val('changepass') || Post::val('confirmpass')) ) {
@@ -1770,7 +1801,7 @@ switch ($action = Req::val('action'))
                 }
 
                 if ($user->infos['oauth_uid'] && Post::val('changepass')) {
-                    Flyspray::show_error(sprintf(L('oauthreqpass'), ucfirst($uesr->infos['oauth_provider'])));
+                    Flyspray::show_error(sprintf(L('oauthreqpass'), ucfirst($user->infos['oauth_provider'])));
                     break;
                 }
 
@@ -2206,12 +2237,47 @@ switch ($action = Req::val('action'))
 			break;
 		}
 
-		$listnames = Post::val('list_name');
-		$listshow = Post::val('show_in_list');
-		$listdelete = Post::val('delete');
-		$listlft = Post::val('lft');
-		$listrgt = Post::val('rgt');
-		$listowners = Post::val('category_owner');
+		# 'Nested Set' structure updates relies on correctly sent tree structure from client.
+		# Netherless we should check before any sql update done.
+		if (isset($_POST['list_name']) && is_array($_POST['list_name'])) {
+			foreach ($_POST['list_name'] as $key => $val) {
+				if (!is_int($key)) {
+					break 2;
+				};
+				if (!is_string($val)) {
+					break 2;
+				};
+				if (!isset($_POST['lft'][$key]) || !isset($_POST['rgt'][$key])) {
+					break 2;
+				}
+				if (!is_numeric($_POST['lft'][$key]) || !is_numeric($_POST['rgt'][$key])) {
+					break 2;
+				}
+			}
+			$listnames = $_POST['list_name'];
+			$listlft = $_POST['lft'];
+			$listrgt = $_POST['rgt'];
+		} else {
+			break;
+		}
+
+		if (isset($_POST['show_in_list']) && is_array($_POST['show_in_list'])) {
+			$listshow = array_filter($_POST['show_in_list'], function($val, $key) { return (is_int($key) && is_numeric($val));}, ARRAY_FILTER_USE_BOTH);
+		} else {
+			$listshow = array();
+		}
+
+		if (isset($_POST['delete']) && is_array($_POST['delete'])) {
+			$listdelete = array_filter($_POST['delete'], function($val, $key) { return (is_int($key) && is_numeric($val));}, ARRAY_FILTER_USE_BOTH);
+		} else {
+			$listdelete = array();
+		}
+
+		if (isset($_POST['category_owner']) && is_array($_POST['category_owner'])) {
+			$listowners = array_filter($_POST['category_owner'], function($val, $key) { return (is_int($key) && is_string($val));}, ARRAY_FILTER_USE_BOTH);
+		} else {
+			$listowners = array();
+		}
 
 		foreach ($listnames as $id => $listname) {
 			if ($listname != '') {
@@ -2221,10 +2287,18 @@ switch ($action = Req::val('action'))
 
 				// Check for duplicates on the same sub-level under same parent category.
 				// First, we'll have to find the right parent for the current category.
-				$sql = $db->query('SELECT *
-                                     FROM {list_category}
-                                    WHERE project_id = ? AND lft < ? and rgt > ?
-                                      AND lft = (SELECT MAX(lft) FROM {list_category} WHERE lft < ? and rgt > ?)',
+				$sql = $db->query('
+					SELECT *
+					FROM {list_category}
+					WHERE project_id = ?
+					AND lft < ?
+					AND rgt > ?
+					AND lft = (
+						SELECT MAX(lft)
+						FROM {list_category}
+						WHERE lft < ?
+						AND rgt > ?
+					)',
 					array(
 						$proj->id,
 						intval($listlft[$id]),
@@ -2428,12 +2502,13 @@ switch ($action = Req::val('action'))
             Flyspray::show_error(L('nopermission'));//TODO: create a better error message
             break;
         }
-        if (!is_array(Post::val('related_id'))) {
+        if (!isset($_POST['related_id']) or !is_array($_POST['related_id'])) {
             Flyspray::show_error(L('formnotcomplete'));
             break;
         }
+        $listremoverelated = array_filter($_POST['related_id'], function($val, $key) { return (is_int($key) && is_numeric($val));}, ARRAY_FILTER_USE_BOTH);
 
-        foreach (Post::val('related_id') as $related) {
+        foreach ($listremoverelated as $related) {
             $sql = $db->query('SELECT this_task, related_task FROM {related} WHERE related_id = ?',
                               array($related));
             $db->query('DELETE FROM {related} WHERE related_id = ? AND (this_task = ? OR related_task = ?)',
@@ -2586,41 +2661,88 @@ switch ($action = Req::val('action'))
         // adding a reminder
         // ##################
     case 'details.addreminder':
-        $how_often  = Post::val('timeamount1', 1) * Post::val('timetype1');
-        $start_time = Flyspray::strtotime(Post::val('timeamount2', 0));
 
-        $userId = Flyspray::usernameToId(Post::val('to_user_id'));
-        if (!Backend::add_reminder($task['task_id'], Post::val('reminder_message'), $how_often, $start_time, $userId)) {
-            Flyspray::show_error(L('usernotexist'));
-            break;
-        }
+	$errors = array();
+	// TODO Naming of the vars of this form is terrible, fix in later (1.1?) version.
 
-        // TODO: Log event in a later version.
+	// repeats
+	if (!is_string($_POST['timeamount1']) or intval($_POST['timeamount1'])<1) {
+		$errors['addreminder_minimalrepeaterror'] = 1;
+	}
 
-        $_SESSION['SUCCESS'] = L('reminderaddedmsg');
-        break;
+	// at least 1 hour (3600sec) minimal interval submitted
+	if (!is_string($_POST['timetype1']) or intval($_POST['timetype1'])<3600) {
+		$errors['addreminder_minimalintervalerror'] = 1;
+	}
 
+	// startdate
+	if (!is_string($_POST['timeamount2'])) {
+		$errors['addreminder_starterror'] = 1;
+	}
+
+	if (!is_string($_POST['to_user_id'])) {
+		$errors['addreminder_datetimeerror'] = 1;
+	}
+
+	if (count($errors)>0) {
+		$_SESSION['ERRORS'] = $errors; # $_SESSION['ERROR'] is very limited, holds only one string and often just overwritten
+		$_SESSION['ERROR'] = L('invalidinput');
+		# pro and contra http 303 redirect here:
+		# - good: browser back button works, browser history.
+		# -  bad: form inputs of user not preserved (at the moment). Annoying if user wrote a long description and then the form submit gets denied because of other reasons.
+		#Flyspray::redirect(createURL('details', $task['task_id']));
+		break;
+	}
+
+	$to_user_id = Flyspray::usernameToId(Post::val('to_user_id'));
+	$start_time = Flyspray::strtotime(Post::val('timeamount2', 0));
+	$how_often = intval(Post::val('timeamount1', 1)) * Post::val('timetype1');
+
+	if (!Backend::add_reminder($task['task_id'], Post::val('reminder_message'), $how_often, $start_time, $to_user_id)) {
+		Flyspray::show_error(L('usernotexist'));
+		break;
+	}
+
+	// log event is written by Backend::add_reminder()
+	$_SESSION['SUCCESS'] = L('reminderaddedmsg');
+	// Do we need to jump to the reminder tab/anchor #remind on task detail page? error and success messages are shown currently at the top. (may change)
+	// redirect on success after POST so browser backbutton works.
+	Flyspray::redirect(createURL('details', $task['task_id']));
+	break;
+	
         // ##################
         // removing a reminder
         // ##################
     case 'deletereminder':
-        if (!$user->perms('manage_project') || !is_array(Post::val('reminder_id'))) {
+        if (!$user->perms('manage_project') || !is_array($_POST['reminder_id'])) {
             break;
         }
 
-        foreach (Post::val('reminder_id') as $reminder_id) {
-            $sql = $db->query('SELECT to_user_id FROM {reminders} WHERE reminder_id = ?',
-                              array($reminder_id));
-            $reminder = $db->fetchOne($sql);
-            $db->query('DELETE FROM {reminders} WHERE reminder_id = ? AND task_id = ?',
-                       array($reminder_id, $task['task_id']));
-            if ($db && $db->affectedRows()) {
-                Flyspray::logEvent($task['task_id'], 18, $reminder);
-            }
-        }
+		$errors = 0;
+		foreach ($_POST['reminder_id'] as $reminder_id) {
+			if (!is_string($reminder_id) or !is_numeric($reminder_id) or $reminder_id<1) {
+				$errors++;
+			}
+		}
 
-        $_SESSION['SUCCESS'] = L('reminderdeletedmsg');
-        break;
+		if ($errors > 0) {
+			$_SESSION['ERROR'] = L('invalidinput');
+			break;
+		}
+
+		foreach ($_POST['reminder_id'] as $reminder_id) {
+			$sql = $db->query('SELECT to_user_id FROM {reminders} WHERE reminder_id = ?',
+				array($reminder_id));
+			$reminder = $db->fetchOne($sql);
+			$db->query('DELETE FROM {reminders} WHERE reminder_id = ? AND task_id = ?',
+				array($reminder_id, $task['task_id']));
+			if ($db && $db->affectedRows()) {
+				Flyspray::logEvent($task['task_id'], 18, $reminder);
+			}
+		}
+
+		$_SESSION['SUCCESS'] = L('reminderdeletedmsg');
+		break;
 
         // ##################
         // change a bunch of users' groups
@@ -3129,143 +3251,103 @@ switch ($action = Req::val('action'))
 
         Notifications::NotificationsHaveBeenRead($validids);
         break;
-    case 'task.bulkupdate':
-        # TODO check if the user has the right to do each action on each task id he send with the form!
-        # TODO check if tasks have open subtasks before closing
-        # TODO SQL Transactions with rollback function if something went wrong in the middle of bulk action
-        # disabled by default and if currently allowed only for admins until proper checks are done
-        if(isset($fs->prefs['massops']) && $fs->prefs['massops']==1 && $user->perms('is_admin')){
 
-        // TODO: Log events in a later version.
+	case 'admin.xmppcleanup':
+		if (!$user->perms('is_admin')) {
+			break;
+		}
 
-        if(Post::val('updateselectedtasks') == "true") {
-            //process quick actions
-            switch(Post::val('bulk_quick_action'))
-            {
-                case 'bulk_take_ownership':
-                    Backend::assign_to_me(Post::val('user_id'),Post::val('ids'));
-                    break;
-                case 'bulk_start_watching':
-                    Backend::add_notification(Post::val('user_id'),Post::val('ids'));
-                    break;
-                case 'bulk_stop_watching':
-                    Backend::remove_notification(Post::val('user_id'),Post::val('ids'));
-                    break;
-            }
+		if (isset($_POST['xmppcleanup']) && is_string($_POST['xmppcleanup'])) {
+			if ($_POST['xmppcleanup'] === 'year') {
+				if ($db->dbtype == 'pgsql') {
+					// recipient_id is chronologic
+					$recipientres = $db->query("SELECT recipient_id
+						FROM {notification_recipients} r
+						JOIN {notification_messages} m ON r.message_id=m.message_id
+						WHERE r.notify_method='j'
+						AND to_timestamp(time_created) < (CURRENT_TIMESTAMP - INTERVAL '1 year')
+						ORDER BY recipient_id DESC LIMIT 1");
+					$recipientrow=$db->fetchRow($recipientres);
+				} else {
+					// recipient_id is chronologic
+					$recipientres = $db->query("SELECT recipient_id
+						FROM {notification_recipients} r
+						JOIN {notification_messages} m ON r.message_id=m.message_id
+						WHERE r.notify_method='j'
+						AND FROM_UNIXTIME(time_created) < (CURRENT_TIMESTAMP - INTERVAL 1 year)
+						ORDER BY recipient_id DESC LIMIT 1");
+					$recipientrow = $db->fetchRow($recipientres);
+				}
 
-            //Process the tasks.
-            $columns = array();
-            $values = array();
+				if ($recipientrow) {
+					$db->query("DELETE FROM {notification_recipients} WHERE notify_method='j' AND recipient_id <=?", array($recipientrow[0]));
+					$deleted = $db->affectedRows();
+					$_SESSION['SUCCESS'] = $deleted == 1 ? '1 deleted unsent xmpp notification.': 'Deleted '.$deleted.' unsent xmpp notifications.';
+					Flyspray::redirect(createURL('admin', 'checks'));
+				}
+				// TODO delete also the related notification_messages, but only I if that have no other recipient method entries (like notify_method='o' for 'online')  
+			}
+		}
+		Flyspray::redirect(createURL('admin', 'checks'));
+		break;
 
-            //determine the tasks properties that have been modified.
-            if(!Post::val('bulk_status')==0){
-                array_push($columns,'item_status');
-                array_push($values, Post::val('bulk_status'));
-            }
-            if(!Post::val('bulk_percent_complete')==0){
-                array_push($columns,'percent_complete');
-                array_push($values, Post::val('bulk_percent_complete'));
-            }
-            if(!Post::val('bulk_task_type')==0){
-                array_push($columns,'task_type');
-                array_push($values, Post::val('bulk_task_type'));
-            }
-            if(!Post::val('bulk_category')==0){
-                array_push($columns,'product_category');
-                array_push($values, Post::val('bulk_category'));
-            }
-            if(!Post::val('bulk_os')==0){
-                array_push($columns,'operating_system');
-                array_push($values, Post::val('bulk_os'));
-            }
-            if(!Post::val('bulk_severity')==0){
-                array_push($columns,'task_severity');
-                array_push($values, Post::val('bulk_severity'));
-            }
-            if(!Post::val('bulk_priority')==0){
-                array_push($columns,'task_priority');
-                array_push($values, Post::val('bulk_priority'));
-            }
-            if(!Post::val('bulk_reportedver')==0){
-                array_push($columns,'product_version');
-                array_push($values, Post::val('bulk_reportedver'));
-            }
-            if(!Post::val('bulk_due_version')==0){
-                array_push($columns,'closedby_version');
-                array_push($values, Post::val('bulk_due_version'));
-            }
-            # TODO Does the user has similiar rights in current and target projects?
-            # TODO Does a task has subtasks? What happens to them? What if they are open/closed?
-            # But: Allowing task dependencies between tasks in different projects is a feature!
-            if(!Post::val('bulk_projects')==0){
-                array_push($columns,'project_id');
-                array_push($values, Post::val('bulk_projects'));
-            }
-            if(!is_null(Post::val('bulk_due_date'))){
-                array_push($columns,'due_date');
-                array_push($values, Flyspray::strtotime(Post::val('bulk_due_date')));
-            }
+case 'task.bulkupdate':
 
-            //only process if one of the task fields has been updated.
-            if(!array_count_values($columns)==0 && Post::val('ids')){
-                //add the selected task id's to the query string
-                $task_ids = Post::val('ids');
-                $valuesAndTasks = array_merge_recursive($values,$task_ids);
+	# TODO check if the user has the right to do each action on each task id he send with the form!
+	# TODO check if tasks have open subtasks before closing
+	# TODO SQL Transactions with rollback function if something went wrong in the middle of bulk action
+	# disabled by default and if currently allowed only for admins until proper checks are done
 
-                //execute the database update on all selected queries
-                $update = $db->query("UPDATE  {tasks}
-                                     SET  ".join('=?, ', $columns)."=?
-                                   WHERE". substr(str_repeat(' task_id = ? OR ', count(Post::val('ids'))), 0, -3), $valuesAndTasks);
-            }
+	if (isset($fs->prefs['massops']) && $fs->prefs['massops']==1 && $user->perms('is_admin')){
 
-            //Set the assignments
-            if(Post::val('bulk_assignment')){
-                // Delete the current assignees for the selected tasks
-                $db->query("DELETE FROM {assigned} WHERE". substr(str_repeat(' task_id = ? OR ', count(Post::val('ids'))), 0, -3),Post::val('ids'));
+		// TODO: Log events in a later version.
 
-                // Convert assigned_to and store them in the 'assigned' table
-                foreach ((array)Post::val('ids') as $id){
-                    //iterate the users that are selected on the user list.
-                    foreach ((array) Post::val('bulk_assignment') as $assignee){
-                        //if 'noone' has been selected then dont do the database update.
-                        if(!$assignee == 0){
-                            //insert the task and user id's into the assigned table.
-                            $db->query('INSERT INTO  {assigned}
-                                             (task_id,user_id)
-                                     VALUES  (?, ?)',array($id,$assignee));
-                        }
-                    }
-                }
-            }
+		$task_ids=filter_var($_POST['ids'], FILTER_VALIDATE_INT, FILTER_FORCE_ARRAY);
 
-            // set success message
-            $_SESSION['SUCCESS'] = L('tasksupdated');
-            break;
-        }
-        //bulk close
-        else {
-            if (!Post::val('resolution_reason')) {
-                Flyspray::show_error(L('noclosereason'));
-                break;
-            }
-            $task_ids = Post::val('ids');
-            foreach($task_ids as $task_id) {
-                $task = Flyspray::getTaskDetails($task_id);
-                if (!$user->can_close_task($task)) {
-                    continue;
-                }
+		if (Post::val('updateselectedtasks') == 'true') {
 
-                if ($task['is_closed']) {
-                    continue;
-                }
+			// process quick actions
+			switch(Post::val('bulk_quick_action')){
+			case 'bulk_take_ownership':
+				Backend::assign_to_me(Post::val('user_id'), Post::val('ids'));
+				break;
+			case 'bulk_start_watching':
+				Backend::add_notification(Post::val('user_id'), Post::val('ids'));
+				break;
+			case 'bulk_stop_watching':
+				Backend::remove_notification(Post::val('user_id'), Post::val('ids'));
+				break;
+			}
 
-                Backend::close_task($task_id, Post::val('resolution_reason'), Post::val('closure_comment', ''), Post::val('mark100', false));
-            }
-            $_SESSION['SUCCESS'] = L('taskclosedmsg');
-            break;
-        }
-        } # end if massopsenabled
-        else{
-        	Flyspray::show_error(L('massopsdisabled'));
-        }
-    }
+			$updateresult=Backend::updateTasks($_POST);
+			break;
+
+		} else {
+			// bulk close
+			if (!Post::val('resolution_reason')) {
+				Flyspray::show_error(L('noclosereason'));
+				break;
+			}
+
+			foreach ($task_ids as $task_id) {
+				$task = Flyspray::getTaskDetails($task_id);
+				if (!$user->can_close_task($task)) {
+					continue;
+				}
+
+				if ($task['is_closed']) {
+					continue;
+				}
+
+				Backend::close_task($task_id, Post::val('resolution_reason'), Post::val('closure_comment', ''), Post::val('mark100', false));
+			}
+			$_SESSION['SUCCESS'] = L('taskclosedmsg');
+			break;
+		}
+
+	} # end if massopsenabled
+	else{
+		Flyspray::show_error(L('massopsdisabled'));
+	}
+
+} // end switch

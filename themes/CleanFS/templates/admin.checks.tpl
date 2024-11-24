@@ -1,14 +1,25 @@
 <div id="toolbox">
+<style>
+#toolbox div.div {
+	border:1px solid #999;
+	margin-top:1em;
+	margin-bottom:1em;
+}
+</style>
 <div>PHP version: <?php echo PHP_VERSION; ?></div>
 <?php if(isset($utf8mb4upgradable)) { echo '<div class="error">'.Filters::noXSS($utf8mb4upgradable).'</div>'; } ?>
 <?php if(isset($oldmysqlversion)) { echo '<div class="error">'.Filters::noXSS($oldmysqlversion).'</div>'; } ?>
 <div>ADOdb version: <?php if(isset($adodbversion)) { echo Filters::noXSS($adodbversion); } ?></div>
 <div>Swiftmailer version: <?php if(isset($swiftmailerversion)) { echo Filters::noXSS($swiftmailerversion); } ?></div>
 <div>HTMLPurifier version: <?php if(isset($htmlpurifierversion)) { echo Filters::noXSS($htmlpurifierversion); } ?></div>
+
+<div class="div">
 <div>passwdcrypt: <?php echo Filters::noXSS($passwdcrypt); ?></div>
 <?php if(isset($hashlengths)) { echo '<div>password hash lengths: '.$hashlengths.'</div>'; } ?>
+</div>
 
 <?php if(isset($registrations)): ?>
+<div class="div">
 <h4><?= $regcount ?> unfinished registrations</h4>
 <table>
 <thead>
@@ -26,9 +37,182 @@
 <td><?= Filters::noXSS($reg['email_address']) ?></td>
 </tr>
 <?php endforeach; ?>
-<?php endif; ?>
 </tbody>
 </table>
+</div>
+<?php endif; ?>
+
+<?php if(isset($xmppmessagecount)): ?>
+<div class="div">
+<p><?= $xmppmessagecount.' unsent xmpp messages' ?></p>
+
+<?php echo tpl_form(Filters::noXSS(createUrl($baseurl))); ?>
+<input type="hidden" name="action" value="admin.xmppcleanup"/>
+<?php if(isset($olderyear) && $olderyear>0): ?>
+<button type="submit" name="xmppcleanup" value="year">delete <?= $olderyear ?> unsent xmpp notifications older 1 year</button> 
+<?php endif; ?>
+<?php if(isset($oldermonth) && $oldermonth>0): ?>
+<button type="submit" name="xmppcleanup" value="month">delete <?= $oldermonth ?> unsent xmpp notifications older 1 month</button> 
+<?php endif; ?>
+</form>
+<table>
+<thead>
+<tr>
+<th>message_id</th>
+<th>Recipients</th>
+<th>time_created</th>
+<th>message_subject</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach($xmppmessages as $xmppm): ?>
+<tr>
+<td><?= $xmppm['message_id'] ?></td>
+<td><?= $xmppm['rcount'] ?></td>
+<td><?= formatDate($xmppm['time_created'], true) ?></td>
+<td><?= Filters::noXSS($xmppm['message_subject']) ?></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+</div>
+<?php endif; ?>
+
+<?php if(isset($legacyusernamessummary)): ?>
+<?= $legacyusernamessummary ?>
+<?php endif; ?>
+
+<div class="div">
+<?php if (isset($cattreelftrgt) or isset($cattreenonunique) or isset($cattreeerrors)): ?>
+<div class="error">Category errors detected:</div>
+<?php else: ?>
+<p>No category tree errors found.</p>
+<?php endif; ?>
+
+<?php if(isset($cattreelftrgt)): ?>
+<div class="error"><?= $cattreelftrgt ?> rgt not greater lft value errors detected.</div>
+<?php endif; ?>
+
+<?php if(isset($cattreenonunique)): ?>
+<div class="error">lft-rgt nonunique detected.</div>
+<table>
+<thead>
+<tr>
+<th>project_id</th>
+<th>bad lft/rgt values</th>
+<th>count</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach($cattreenonunique as $nonunique): ?>
+<tr>
+<td><?= $nonunique['project_id'] ?></td>
+<td><?= $nonunique['lft'] ?></td>
+<td><?= $nonunique['c'] ?></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+<?php endif; ?>
+
+<?php if(isset($cattreeerrors)): ?>
+<table>
+<thead>
+<tr>
+<th>project_id</th>
+<th>Category Tree Anomalies</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach($cattreeerrors as $caterr): ?>
+<tr>
+<td><?= $caterr['project_id'] ?></td>
+<td><?= $caterr['count'] ?></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+<?php endif; ?>
+</div>
+
+<?php if ($wrongtaskcategoriescount) : ?>
+<div>
+<div class="error"><p>There are <?= $wrongtaskcategoriescount ?> tasks with a bad product_category value, either having a category id thats from another project or there is no category with this id anymore.</p>
+<?php if ($wrongtaskcategoriescount >20): ?>
+<span>This shows 20 of that as example.</span>
+<?php endif; ?>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>task_id</th>
+<th>task project_id</th>
+<th>category project_id</th>
+<th>task cat_id</th>
+<th>closed</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach ($wrongtaskcategories as $wtc): ?>
+<tr>
+<td><?= $wtc['task_id'] ?></td>
+<td><?= $wtc['tpid'] ?></td>
+<td><?= $wtc['cpid'] ?></td>
+<td><?= $wtc['product_category'] ?></td>
+<td><?= $wtc['is_closed'] ?></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+</div>
+<?php endif; ?>
+
+<?php if(isset($categorytrees)): ?>
+<style>
+#cattrees{
+	display:flex;
+	flex-wrap:wrap;  
+}
+.cattree {
+	position: relative;
+	margin-left:-10px;
+}
+.cattree i {
+	position: absolute;
+	height: 20px;
+	border: 1px solid rgba(0,0,0,0.2);
+}
+.cattree i:before{
+	content:attr(data-lft);
+	font-size:8px;
+	position:absolute;
+	left:-4px;
+	top:-10px;
+	color:#600;
+}
+.cattree i:after{
+	content:attr(data-rgt);
+	font-size:8px;
+	position:absolute;
+	right:-4px;
+	top:-10px;
+	color:#009;
+}
+<?= $levelallcss ?>
+</style>
+<div id="cattrees">
+<?php foreach ($categorytrees as $cattree): ?>
+<div class="box">
+<h4><?= $cattree['project_id']==0 ?'global': 'project_id' ?> <?= $cattree['project_id'] ?></h4>
+<div class="cattree p<?= $cattree['project_id'] ?>">
+<style><?= $cattree['css'] ?></style>
+<?= $cattree['html'] ?>
+</div>
+</div><?php endforeach; ?>
+</div>
+<?php endif; ?>
+
 
 <?php if(isset($fstables)): ?>
 <style>
